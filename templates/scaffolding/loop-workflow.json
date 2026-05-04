@@ -1,0 +1,93 @@
+{
+  "_template": "loop-workflow",
+  "_description": "Processes a list of items in batches using splitInBatches. Replace all PLACEHOLDER values.",
+  "name": "PLACEHOLDER: Batch Loop Workflow Name",
+  "nodes": [
+    {
+      "id": "REPLACE_WITH_UUID_V4",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "parameters": {}
+    },
+    {
+      "id": "REPLACE_WITH_UUID_V4",
+      "name": "Fetch All Items",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "https://REPLACE_WITH_LIST_ENDPOINT",
+        "options": {}
+      }
+    },
+    {
+      "id": "REPLACE_WITH_UUID_V4",
+      "name": "Loop Over Items",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [720, 300],
+      "parameters": {
+        "batchSize": 10,
+        "options": {
+          "reset": false
+        }
+      }
+    },
+    {
+      "id": "REPLACE_WITH_UUID_V4",
+      "name": "Process Each Batch",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 220],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Process a single item from the batch\nconst item = $input.item.json;\n// Add your transformation logic here\nreturn {\n  json: {\n    ...item,\n    processed: true,\n    processedAt: new Date().toISOString()\n  }\n};"
+      }
+    },
+    {
+      "id": "REPLACE_WITH_UUID_V4",
+      "name": "Post-Loop Summary",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [960, 400],
+      "parameters": {
+        "mode": "manual",
+        "fields": {
+          "values": [
+            { "name": "status", "value": "completed" },
+            { "name": "completedAt", "value": "={{ $now.toISO() }}" }
+          ]
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [[{ "node": "Fetch All Items", "type": "main", "index": 0 }]]
+    },
+    "Fetch All Items": {
+      "main": [[{ "node": "Loop Over Items", "type": "main", "index": 0 }]]
+    },
+    "Loop Over Items": {
+      "main": [
+        [{ "node": "Process Each Batch", "type": "main", "index": 0 }],
+        [{ "node": "Post-Loop Summary", "type": "main", "index": 0 }]
+      ]
+    },
+    "Process Each Batch": {
+      "main": [[{ "node": "Loop Over Items", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "staticData": null,
+  "tags": [],
+  "pinData": {}
+}

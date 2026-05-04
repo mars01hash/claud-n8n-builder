@@ -1,0 +1,88 @@
+{
+  "_template": "webhook-workflow",
+  "_description": "Receives a POST request, processes payload, and responds with JSON. Replace all PLACEHOLDER values before use.",
+  "name": "PLACEHOLDER: Webhook Workflow Name",
+  "nodes": [
+    {
+      "id": "REPLACE_WITH_UUID_V4",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "REPLACE_WITH_PATH",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "id": "REPLACE_WITH_UUID_V4",
+      "name": "Validate & Map Fields",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [480, 300],
+      "parameters": {
+        "mode": "manual",
+        "fields": {
+          "values": [
+            {
+              "name": "REPLACE_FIELD_NAME",
+              "value": "={{ $json[\"REPLACE_SOURCE_FIELD\"] }}"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "REPLACE_WITH_UUID_V4",
+      "name": "Process Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 300],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Process your items here\nconst results = [];\nfor (const item of $input.all()) {\n  results.push({\n    json: {\n      ...item.json,\n      processed: true,\n      timestamp: new Date().toISOString()\n    }\n  });\n}\nreturn results;"
+      }
+    },
+    {
+      "id": "REPLACE_WITH_UUID_V4",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [960, 300],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, data: $json }) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              { "name": "Content-Type", "value": "application/json" }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Validate & Map Fields", "type": "main", "index": 0 }]]
+    },
+    "Validate & Map Fields": {
+      "main": [[{ "node": "Process Data", "type": "main", "index": 0 }]]
+    },
+    "Process Data": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "staticData": null,
+  "tags": [],
+  "pinData": {}
+}

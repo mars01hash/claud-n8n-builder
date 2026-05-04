@@ -1,0 +1,114 @@
+{
+  "_template": "http-request-workflow",
+  "_description": "Scheduled workflow that calls an external API, transforms the response, and stores results. Replace all PLACEHOLDER values.",
+  "name": "PLACEHOLDER: HTTP Request Workflow Name",
+  "nodes": [
+    {
+      "id": "REPLACE_WITH_UUID_V4",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 * * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "REPLACE_WITH_UUID_V4",
+      "name": "Fetch from API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "https://REPLACE_WITH_API_URL",
+        "authentication": "none",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "REPLACE_WITH_UUID_V4",
+      "name": "Filter Valid Records",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [720, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "REPLACE_WITH_UUID_V4",
+              "leftValue": "={{ $json[\"REPLACE_FIELD\"] }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "isNotEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "REPLACE_WITH_UUID_V4",
+      "name": "Transform Data",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [960, 220],
+      "parameters": {
+        "mode": "manual",
+        "fields": {
+          "values": [
+            { "name": "REPLACE_OUTPUT_FIELD", "value": "={{ $json[\"REPLACE_INPUT_FIELD\"] }}" },
+            { "name": "fetched_at", "value": "={{ $now.toISO() }}" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "REPLACE_WITH_UUID_V4",
+      "name": "No Op — Filtered Out",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [960, 400],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [[{ "node": "Fetch from API", "type": "main", "index": 0 }]]
+    },
+    "Fetch from API": {
+      "main": [[{ "node": "Filter Valid Records", "type": "main", "index": 0 }]]
+    },
+    "Filter Valid Records": {
+      "main": [
+        [{ "node": "Transform Data", "type": "main", "index": 0 }],
+        [{ "node": "No Op — Filtered Out", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "staticData": null,
+  "tags": [],
+  "pinData": {}
+}

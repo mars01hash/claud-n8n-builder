@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""
+Hook: catalog-check
+Checks WORKSPACE_ROOT/workflow-catalog.md for semantically similar workflows
+before a new one is built. Returns matches ranked by keyword overlap.
+
+Usage:
+    python catalog-check --query "send slack message when postgres row inserted"
+    python catalog-check --query "..." --catalog path/to/workflow-catalog.md
+    python catalog-check --query "..." --threshold 0.3
+"""
+
+import sys
+import re
+import argparse
+from pathlib import Path
+from collections import Counter
+
+CATALOG_DEFAULT = Path(__file__).parent.parent / "WORKSPACE_ROOT" / "workflow-catalog.md"
+
+STOP_WORDS = {
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
+    "has", "have", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "can", "when", "if", "that", "this", "it",
+    "i", "me", "my", "we", "our", "you", "your", "new", "create", "make",
+    "build", "add", "get", "set", "run", "use", "need", "want", "send",
+}
+
+
+def tokenize(text: str) -> set[str]:
+    words = re.findall(r'[a-zA-Z0-9]+', text.lower())
+    return {w for w in words if w not in STOP_WORDS and len(w) > 2}
+
+
+def parse_catalog(catalog_path: Path) -> list[dict]:
+    """Parse markdown table rows from workflow-catalog.md."""
+    entries = []
+    if not catalog_path.exists():
+        return entries
+
+    content = catalog_path.read_text(encoding="utf-8")
+    lines = content.splitlines()
+
+    for line in lines:
+        # Match markdown table rows: | Name | Trigger | Integrations | Keywords | Guide |
+        if line.startswith("|") and not line.startswith("| Name") and "---" not in line:
+            parts = [p.strip() for p in line.strip("|").split("|")]
+            if len(parts) >= 5:
+                name, trigger, integrations, keywords, guide = parts[0], parts[1], parts[2], parts[3], parts[4]
+                # Extract href from markdown link [text](url)
+                guide_match = re.search(r'\[.*?\]\((.*?)\)', guide)
+                guide_path = guide_match.group(1) if guide_match else guide.strip()
+                entries.append({
+                    "name": name,
+                    "trigger": trigger,
+                    "integrations": integrations,
+                    "keywords": keywords,
+                    "guide": guide_path,
+                    "search_text": f"{name} {trigger} {integrations} {keywords}",
+                })
+    return entries
+
+
+def score_similarity(query_tokens: set[str], entry: dict) -> float:
+    """Jaccard-inspired similarity score."""
+    entry_tokens = tokenize(entry["search_text"])
+    if not entry_tokens:
+        return 0.0
+    intersection = query_tokens & entry_tokens
+    union = query_tokens | entry_tokens
+    return len(intersection) / len(union)
+
+
+def find_matches(query: str, catalog: list[dict], threshold: float = 0.2, top_n: int = 3) -> list[dict]:
+    query_tokens = tokenize(query)
+    scored = []
+    for entry in catalog:
+        score = score_similarity(query_tokens, entry)
+        if score >= threshold:
+            scored.append({**entry, "score": round(score, 3)})
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored[:top_n]
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Check workflow catalog for similar existing workflows")
+    parser.add_argument("--query", "-q", required=True, help="Natural language description of the new workflow")
+    parser.add_argument("--catalog", "-c", type=str, default=str(CATALOG_DEFAULT), help="Path to workflow-catalog.md")
+    parser.add_argument("--threshold", "-t", type=float, default=0.2, help="Minimum similarity score (0.0-1.0)")
+    parser.add_argument("--top", "-n", type=int, default=3, help="Maximum results to return")
+    parser.add_argument("--json", action="store_true", help="Output results as JSON")
+    args = parser.parse_args()
+
+    catalog_path = Path(args.catalog)
+    catalog = parse_catalog(catalog_path)
+
+    if not catalog:
+        if args.json:
+            import json
+            print(json.dumps({"status": "empty_catalog", "matches": []}))
+        else:
+            print(f"INFO: Catalog at '{catalog_path}' is empty or not found. No duplicates to check.")
+        sys.exit(0)
+
+    matches = find_matches(args.query, catalog, threshold=args.threshold, top_n=args.top)
+
+    if args.json:
+        import json
+        print(json.dumps({
+            "status": "matches_found" if matches else "no_matches",
+            "query": args.query,
+            "matches": matches,
+        }, indent=2))
+        sys.exit(0)
+
+    if not matches:
+        print(f"CATALOG: No similar workflows found (threshold={args.threshold}).")
+        print("Proceeding with new workflow build.")
+        sys.exit(0)
+
+    print("=" * 60)
+    print("CATALOG HIT: Similar workflows already exist.")
+    print("=" * 60)
+    for i, m in enumerate(matches, 1):
+        print(f"\n  [{i}] {m['name']}  (similarity: {m['score']})")
+        print(f"      Trigger      : {m['trigger']}")
+        print(f"      Integrations : {m['integrations']}")
+        print(f"      Keywords     : {m['keywords']}")
+        print(f"      Guide        : {m['guide']}")
+    print("\nRecommendation: Review the above before building a duplicate.")
+    print("Pass --threshold 0.0 to see all catalog entries.")
+    sys.exit(2)  # Exit 2 = matches found (not an error, but caller should prompt user)
+
+
+if __name__ == "__main__":
+    main()

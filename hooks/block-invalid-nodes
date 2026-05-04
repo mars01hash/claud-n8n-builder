@@ -1,0 +1,684 @@
+#!/usr/bin/env python3
+"""
+Hook: block-invalid-nodes
+Validates an n8n workflow JSON against the complete schema specification
+defined in skills/n8n-mcp-cli.SKILL.md Parts 2, 6, and 8.
+
+Exit codes:
+  0 = Valid — workflow passed all checks
+  1 = Invalid — one or more hard errors found
+  2 = Warning — passed with issues that need human review
+
+Usage:
+    cat workflow.json | python block-invalid-nodes
+    python block-invalid-nodes --file workflow.json
+    python block-invalid-nodes --file workflow.json --strict   # treat warnings as errors
+    python block-invalid-nodes --file workflow.json --json     # machine-readable output
+"""
+
+import json
+import re
+import sys
+import argparse
+from pathlib import Path
+from dataclasses import dataclass, field
+from typing import Optional
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Schema Constants (sourced from n8n-mcp-cli.SKILL.md Part 6)
+# ─────────────────────────────────────────────────────────────────────────────
+
+UUID_RE = re.compile(
+    r'^[0-9a-f]{8}-[0-9a-f]{4}-[4][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+    re.IGNORECASE
+)
+
+# Official node type format (n8n-nodes-base.Name or @n8n/scope.Name)
+NODE_TYPE_RE = re.compile(
+    r'^(n8n-nodes-base\.[A-Za-z][A-Za-z0-9]+'
+    r'|@n8n/[a-z][a-z0-9-]*\.[A-Za-z][A-Za-z0-9]+'
+    r'|n8n-nodes-[a-z][a-z0-9-]*\.[A-Za-z][A-Za-z0-9]+)$'  # community nodes
+)
+
+# Trigger node types that legitimately have no incoming connections
+TRIGGER_TYPES = frozenset({
+    "n8n-nodes-base.manualTrigger",
+    "n8n-nodes-base.webhook",
+    "n8n-nodes-base.scheduleTrigger",
+    "n8n-nodes-base.executeWorkflowTrigger",
+    "n8n-nodes-base.emailReadImap",
+    "n8n-nodes-base.postgresTrigger",
+    "n8n-nodes-base.mysqlTrigger",
+    "n8n-nodes-base.mongoDbTrigger",
+    "n8n-nodes-base.rabbitmqTrigger",
+    "n8n-nodes-base.redisTrigger",
+    "n8n-nodes-base.kafkaTrigger",
+    "n8n-nodes-base.githubTrigger",
+    "n8n-nodes-base.slackTrigger",
+    "n8n-nodes-base.notionTrigger",
+    "n8n-nodes-base.airtableTrigger",
+    "n8n-nodes-base.telegramTrigger",
+})
+
+# Nodes that never need incoming connections (UI utilities)
+UI_ONLY_TYPES = frozenset({
+    "n8n-nodes-base.stickyNote",
+})
+
+# Supported typeVersions per node type
+# Source: n8n-mcp-cli.SKILL.md Part 6
+SUPPORTED_VERSIONS: dict[str, list] = {
+    "n8n-nodes-base.manualTrigger":        [1],
+    "n8n-nodes-base.scheduleTrigger":      [1, 1.1, 1.2],
+    "n8n-nodes-base.webhook":              [1, 1.1, 2],
+    "n8n-nodes-base.executeWorkflowTrigger": [1, 1.1],
+    "n8n-nodes-base.httpRequest":          [1, 2, 3, 4, 4.1, 4.2],
+    "n8n-nodes-base.set":                  [1, 2, 3, 3.2, 3.3, 3.4],
+    "n8n-nodes-base.if":                   [1, 2, 2.1, 2.2],
+    "n8n-nodes-base.switch":               [1, 2, 3, 3.2],
+    "n8n-nodes-base.code":                 [1, 2],
+    "n8n-nodes-base.function":             [1],   # deprecated — warn
+    "n8n-nodes-base.functionItem":         [1],   # deprecated — warn
+    "n8n-nodes-base.merge":                [1, 2, 3],
+    "n8n-nodes-base.splitInBatches":       [1, 2, 3],
+    "n8n-nodes-base.postgres":             [1, 2, 2.1, 2.2, 2.3, 2.4, 2.5],
+    "n8n-nodes-base.mysql":               [1, 2, 2.1, 2.2, 2.3, 2.4],
+    "n8n-nodes-base.googleSheets":         [2, 3, 4, 4.1, 4.2, 4.3, 4.4, 4.5],
+    "n8n-nodes-base.slack":               [1, 2, 2.1, 2.2],
+    "n8n-nodes-base.emailSend":            [1, 2, 2.1],
+    "n8n-nodes-base.respondToWebhook":     [1, 1.1],
+    "n8n-nodes-base.wait":                 [1, 1.1],
+    "n8n-nodes-base.noOp":                 [1],
+    "n8n-nodes-base.executeWorkflow":      [1, 1.1],
+    "n8n-nodes-base.stickyNote":           [1],
+    "n8n-nodes-base.n8n":                  [1],
+    "n8n-nodes-base.splitOut":             [1],
+    "n8n-nodes-base.aggregate":            [1],
+    "n8n-nodes-base.limit":                [1],
+    "n8n-nodes-base.sort":                 [1],
+    "n8n-nodes-base.removeDuplicates":     [1],
+    "n8n-nodes-base.filter":               [1, 2],
+    "n8n-nodes-base.summarize":            [1],
+    "n8n-nodes-base.itemLists":            [1, 2, 3, 3.1],
+}
+
+# Deprecated nodes — generate warnings
+DEPRECATED_TYPES = frozenset({
+    "n8n-nodes-base.function",
+    "n8n-nodes-base.functionItem",
+    "n8n-nodes-base.spreadsheetFile",
+    "n8n-nodes-base.readBinaryFiles",
+    "n8n-nodes-base.writeBinaryFile",
+})
+
+# Secret detection patterns (checks stringified JSON)
+SECRET_PATTERNS = [
+    (re.compile(r'Authorization["\':\s]+Bearer\s+[A-Za-z0-9\-_\.]{20,}', re.I),   "Bearer token in parameters"),
+    (re.compile(r'["\']password["\']\s*:\s*["\'][^$\{][^"\']{3,}["\']', re.I),    "Hardcoded password value"),
+    (re.compile(r'["\']api[_-]?key["\']\s*:\s*["\'][^$\{][A-Za-z0-9\-_]{10,}["\']', re.I), "Hardcoded API key"),
+    (re.compile(r'["\']secret["\']\s*:\s*["\'][^$\{][A-Za-z0-9\-_]{8,}["\']', re.I),  "Hardcoded secret"),
+    (re.compile(r'sk-[A-Za-z0-9]{20,}'),                               "OpenAI API key pattern"),
+    (re.compile(r'xox[bpas]-[0-9]+-[0-9A-Za-z\-]+'),                  "Slack token pattern"),
+    (re.compile(r'ghp_[A-Za-z0-9]{36}'),                               "GitHub personal access token"),
+    (re.compile(r'ya29\.[A-Za-z0-9\-_]{68}'),                          "Google OAuth access token"),
+    (re.compile(r'AKIA[0-9A-Z]{16}'),                                  "AWS access key ID"),
+    (re.compile(r'[0-9a-f]{32}'),                                      "32-char hex string (possible key)"),
+]
+
+# Common n8n errors: check parameter-level issues
+COMMON_PARAM_ERRORS = {
+    "n8n-nodes-base.webhook": {
+        "missing_path": lambda p: not p.get("path"),
+        "invalid_response_mode": lambda p: p.get("responseMode") not in [
+            None, "onReceived", "lastNode", "responseNode"
+        ],
+    },
+    "n8n-nodes-base.httpRequest": {
+        "missing_url": lambda p: not p.get("url"),
+        "invalid_method": lambda p: p.get("method") not in [
+            None, "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"
+        ],
+    },
+    "n8n-nodes-base.postgres": {
+        "missing_operation": lambda p: not p.get("operation"),
+        "invalid_operation": lambda p: p.get("operation") not in [
+            None, "select", "insert", "update", "delete", "executeQuery", "runQuery"
+        ],
+    },
+    "n8n-nodes-base.scheduleTrigger": {
+        "missing_rule": lambda p: not p.get("rule"),
+    },
+    "n8n-nodes-base.code": {
+        "missing_code": lambda p: not p.get("jsCode") and not p.get("pythonCode"),
+        "invalid_mode": lambda p: p.get("mode") not in [
+            None, "runOnceForAllItems", "runOnceForEachItem"
+        ],
+    },
+    "n8n-nodes-base.if": {
+        "missing_conditions": lambda p: not p.get("conditions"),
+    },
+    "n8n-nodes-base.set": {
+        "missing_mode": lambda p: p.get("mode") not in [None, "manual", "auto"],
+    },
+}
+
+# Expression validation: check for common mistakes
+EXPRESSION_ANTI_PATTERNS = [
+    (re.compile(r'YYYY|DD(?!D)'),    "Moment.js date tokens detected (use yyyy, dd for Luxon)"),
+    (re.compile(r'\$node\["'),       "Deprecated $node syntax — use $(\"Node Name\") instead"),
+    (re.compile(r'\$items\('),       "Deprecated $items() — use $() or $input.all()"),
+    (re.compile(r'\.json\(\)'),      ".json() is not a method — use .json property"),
+    (re.compile(r'\$json\s*\.\s*\$json'), "Chained $json — incorrect nesting"),
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Result Data Structures
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class ValidationIssue:
+    severity: str          # "ERROR" | "WARNING" | "INFO"
+    rule_id: str           # e.g. "R01", "W03"
+    node_name: str         # affected node, or "workflow" for top-level
+    message: str
+    fix: str               # actionable fix description
+
+
+@dataclass
+class ValidationResult:
+    errors: list[ValidationIssue] = field(default_factory=list)
+    warnings: list[ValidationIssue] = field(default_factory=list)
+    infos: list[ValidationIssue] = field(default_factory=list)
+
+    @property
+    def passed(self) -> bool:
+        return len(self.errors) == 0
+
+    @property
+    def total_issues(self) -> int:
+        return len(self.errors) + len(self.warnings)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Validation Functions
+# ─────────────────────────────────────────────────────────────────────────────
+
+def check_top_level(workflow: dict, result: ValidationResult) -> None:
+    """R01-R05: Top-level workflow structure."""
+
+    if not workflow.get("name"):
+        result.errors.append(ValidationIssue("ERROR", "R01", "workflow",
+            "Missing 'name' field.",
+            "Add: \"name\": \"Your Workflow Name\""))
+
+    nodes = workflow.get("nodes")
+    if not isinstance(nodes, list):
+        result.errors.append(ValidationIssue("ERROR", "R02", "workflow",
+            "'nodes' must be an array.",
+            "Ensure nodes is a JSON array []"))
+        return  # cannot continue without nodes
+
+    if len(nodes) == 0:
+        result.errors.append(ValidationIssue("ERROR", "R03", "workflow",
+            "'nodes' array is empty — workflow has no nodes.",
+            "Add at least one trigger node and one action node."))
+
+    connections = workflow.get("connections")
+    if not isinstance(connections, dict):
+        result.errors.append(ValidationIssue("ERROR", "R04", "workflow",
+            "'connections' must be an object.",
+            "Ensure connections is a JSON object {}"))
+
+    if workflow.get("active") is True:
+        result.errors.append(ValidationIssue("ERROR", "R05", "workflow",
+            "'active' is true — workflows must not be activated on generation.",
+            "Set \"active\": false — user activates manually after import and verification."))
+
+    settings = workflow.get("settings", {})
+    if settings.get("executionOrder") != "v1":
+        result.warnings.append(ValidationIssue("WARNING", "W01", "workflow",
+            f"'settings.executionOrder' is '{settings.get('executionOrder')}' — expected 'v1'.",
+            "Set: \"executionOrder\": \"v1\""))
+
+
+def check_nodes(nodes: list, result: ValidationResult) -> tuple[set, set]:
+    """R06-R14: Per-node field validation. Returns (name_set, trigger_name_set)."""
+    name_set: set[str] = set()
+    id_set: set[str] = set()
+    trigger_names: set[str] = set()
+    seen_names: dict[str, int] = {}
+    seen_ids: dict[str, int] = {}
+
+    for idx, node in enumerate(nodes):
+        label = node.get("name", f"<node[{idx}]>")
+
+        # R06: id must be a valid UUID v4
+        nid = node.get("id", "")
+        if not nid:
+            result.errors.append(ValidationIssue("ERROR", "R06", label,
+                "Node is missing 'id' field.",
+                "Generate a UUID v4 and add: \"id\": \"<uuid>\""))
+        elif not UUID_RE.match(str(nid)):
+            result.errors.append(ValidationIssue("ERROR", "R06", label,
+                f"Node 'id' is not a valid UUID v4: '{nid}'",
+                "Regenerate: python -c \"import uuid; print(uuid.uuid4())\""))
+        else:
+            if nid in seen_ids:
+                result.errors.append(ValidationIssue("ERROR", "R07", label,
+                    f"Duplicate node id '{nid}' also used by node at index {seen_ids[nid]}.",
+                    "Generate a unique UUID v4 for each node."))
+            seen_ids[nid] = idx
+            id_set.add(nid)
+
+        # R08: name must be present and unique
+        name = node.get("name", "")
+        if not name:
+            result.errors.append(ValidationIssue("ERROR", "R08", label,
+                "Node is missing 'name' field.",
+                "Add a unique, descriptive name: \"name\": \"Fetch Orders from API\""))
+        else:
+            if name in seen_names:
+                result.errors.append(ValidationIssue("ERROR", "R08", name,
+                    f"Duplicate node name '{name}' also used at index {seen_names[name]}.",
+                    "Each node must have a unique name — n8n uses names as connection keys."))
+            seen_names[name] = idx
+            name_set.add(name)
+
+        # R09: type must be present and valid format
+        ntype = node.get("type", "")
+        if not ntype:
+            result.errors.append(ValidationIssue("ERROR", "R09", label,
+                "Node is missing 'type' field.",
+                "Add: \"type\": \"n8n-nodes-base.<NodeName>\""))
+        elif not NODE_TYPE_RE.match(ntype):
+            result.errors.append(ValidationIssue("ERROR", "R09", label,
+                f"Node type '{ntype}' does not match valid n8n format.",
+                "Format: n8n-nodes-base.<Name> or @n8n/<scope>.<Name>"))
+
+        # R10: typeVersion must be a known version for known node types
+        tv = node.get("typeVersion")
+        if tv is None:
+            result.errors.append(ValidationIssue("ERROR", "R10", label,
+                "Node is missing 'typeVersion'.",
+                "Add the typeVersion — check n8n-mcp-cli.SKILL.md Part 6."))
+        elif ntype in SUPPORTED_VERSIONS:
+            if tv not in SUPPORTED_VERSIONS[ntype]:
+                result.errors.append(ValidationIssue("ERROR", "R10", label,
+                    f"typeVersion {tv} is not supported for '{ntype}'. "
+                    f"Supported: {SUPPORTED_VERSIONS[ntype]}",
+                    f"Use the latest: {SUPPORTED_VERSIONS[ntype][-1]}"))
+
+        # R11: deprecated nodes
+        if ntype in DEPRECATED_TYPES:
+            result.warnings.append(ValidationIssue("WARNING", "W02", label,
+                f"Node type '{ntype}' is deprecated.",
+                "Replace 'function' with 'code' (typeVersion 2), 'functionItem' with 'code' (mode: runOnceForEachItem)."))
+
+        # R12: position must be a 2-element array of numbers
+        pos = node.get("position")
+        if not isinstance(pos, list) or len(pos) != 2:
+            result.errors.append(ValidationIssue("ERROR", "R12", label,
+                f"Node 'position' must be [x, y] array, got: {pos}",
+                "Set position: [240, 300] (grid of 240 units)"))
+        elif not all(isinstance(v, (int, float)) for v in pos):
+            result.errors.append(ValidationIssue("ERROR", "R12", label,
+                "Node 'position' values must be numbers.",
+                "Use integer coordinates: [480, 300]"))
+
+        # R13: webhook nodes need webhookId
+        if ntype == "n8n-nodes-base.webhook" and not node.get("webhookId"):
+            result.errors.append(ValidationIssue("ERROR", "R13", label,
+                "Webhook node is missing 'webhookId' field.",
+                "Add: \"webhookId\": \"<fresh UUID v4>\" — n8n uses this to build the webhook URL."))
+
+        # W03: common parameter errors per node type
+        ntype_short = ntype.split(".")[-1] if "." in ntype else ntype
+        full_type = ntype
+        params = node.get("parameters", {})
+        if full_type in COMMON_PARAM_ERRORS:
+            for check_name, check_fn in COMMON_PARAM_ERRORS[full_type].items():
+                try:
+                    if check_fn(params):
+                        result.warnings.append(ValidationIssue("WARNING", "W03", label,
+                            f"Parameter check failed: {check_name} — node may not function correctly.",
+                            f"Review '{check_name}' parameter for {ntype}"))
+                except Exception:
+                    pass
+
+        # Track trigger nodes
+        if ntype in TRIGGER_TYPES:
+            trigger_names.add(name)
+
+    return name_set, trigger_names
+
+
+def check_connections(
+    connections: dict,
+    name_set: set,
+    trigger_names: set,
+    result: ValidationResult
+) -> None:
+    """R15-R20: Connection integrity checks."""
+
+    if not isinstance(connections, dict):
+        return  # already caught in top-level check
+
+    # Build set of all nodes that are connection targets
+    targeted_nodes: set[str] = set()
+    all_sources: set[str] = set(connections.keys())
+
+    for src_name, conn_data in connections.items():
+
+        # R15: source must be a real node name
+        if src_name not in name_set:
+            result.errors.append(ValidationIssue("ERROR", "R15", src_name,
+                f"Connection source '{src_name}' does not match any node name.",
+                "Check spelling — node names are case-sensitive and must match exactly."))
+
+        if not isinstance(conn_data, dict):
+            result.errors.append(ValidationIssue("ERROR", "R16", src_name,
+                f"Connection value for '{src_name}' must be an object.",
+                "Format: { \"main\": [[{ \"node\": \"...\", \"type\": \"main\", \"index\": 0 }]] }"))
+            continue
+
+        main_ports = conn_data.get("main", [])
+        if not isinstance(main_ports, list):
+            result.errors.append(ValidationIssue("ERROR", "R16", src_name,
+                f"'main' value for '{src_name}' must be an array of arrays.",
+                "Format: \"main\": [ [ { \"node\": \"...\", \"type\": \"main\", \"index\": 0 } ] ]"))
+            continue
+
+        for port_idx, port in enumerate(main_ports):
+            if not isinstance(port, list):
+                result.errors.append(ValidationIssue("ERROR", "R17", src_name,
+                    f"Port {port_idx} under '{src_name}' must be an array of edge objects.",
+                    "Each port must be an array: [[{\"node\": \"...\", \"type\": \"main\", \"index\": 0}]]"))
+                continue
+
+            for edge_idx, edge in enumerate(port):
+                if not isinstance(edge, dict):
+                    result.errors.append(ValidationIssue("ERROR", "R17", src_name,
+                        f"Edge at port {port_idx}[{edge_idx}] must be an object.",
+                        "Format: {\"node\": \"Target Name\", \"type\": \"main\", \"index\": 0}"))
+                    continue
+
+                # R18: target node must exist
+                target = edge.get("node", "")
+                if not target:
+                    result.errors.append(ValidationIssue("ERROR", "R18", src_name,
+                        f"Edge at port {port_idx}[{edge_idx}] is missing 'node' field.",
+                        "Add the target node name: \"node\": \"Target Node Name\""))
+                elif target not in name_set:
+                    result.errors.append(ValidationIssue("ERROR", "R18", src_name,
+                        f"Connection target '{target}' does not match any node name.",
+                        f"Available nodes: {sorted(name_set)}"))
+                else:
+                    targeted_nodes.add(target)
+
+                # R19: edge must have type: "main" (or ai_* for langchain nodes)
+                edge_type = edge.get("type", "")
+                valid_types = {"main", "ai_tool", "ai_memory", "ai_languageModel",
+                               "ai_document", "ai_embedding", "ai_retriever",
+                               "ai_vectorStore", "ai_chain"}
+                if edge_type not in valid_types:
+                    result.errors.append(ValidationIssue("ERROR", "R19", src_name,
+                        f"Edge 'type' is '{edge_type}' — expected 'main' or 'ai_*'.",
+                        "Standard nodes use: \"type\": \"main\""))
+
+                # R19b: index must be 0
+                if edge.get("index", 0) != 0:
+                    result.warnings.append(ValidationIssue("WARNING", "W04", src_name,
+                        f"Edge 'index' is {edge.get('index')} — typically 0 for standard nodes.",
+                        "Set \"index\": 0 unless you specifically need a secondary input port."))
+
+    # R20: trigger nodes must NOT be connection targets
+    trigger_targets = targeted_nodes & trigger_names
+    for trig in trigger_targets:
+        result.errors.append(ValidationIssue("ERROR", "R20", trig,
+            f"Trigger node '{trig}' is a connection target — triggers have no inputs.",
+            "Remove the connection pointing to the trigger node."))
+
+    # R21: non-trigger, non-UI nodes must all be targeted (no orphans)
+    all_node_names = name_set - trigger_names - UI_ONLY_TYPES
+    orphans = all_node_names - targeted_nodes
+    for orphan in orphans:
+        result.errors.append(ValidationIssue("ERROR", "R21", orphan,
+            f"Node '{orphan}' has no incoming connections (orphan).",
+            "Wire this node from a source, or remove it if unused."))
+
+    # W05: warn if there are no connections at all for a multi-node workflow
+    if len(name_set) > 1 and not connections:
+        result.warnings.append(ValidationIssue("WARNING", "W05", "workflow",
+            "connections object is empty but workflow has multiple nodes.",
+            "Add connections to define the execution order."))
+
+
+def check_secrets(workflow: dict, result: ValidationResult) -> None:
+    """R22: Detect hardcoded secrets anywhere in the workflow JSON."""
+    workflow_str = json.dumps(workflow)
+
+    # Exclude credential placeholder strings
+    clean_str = workflow_str.replace("REPLACE_WITH_CREDENTIAL_ID", "")
+
+    for pattern, description in SECRET_PATTERNS:
+        match = pattern.search(clean_str)
+        if match:
+            # Skip if the match is inside a node name or description (heuristic)
+            context = clean_str[max(0, match.start()-20):match.end()+20]
+            if '"name"' in context or '"description"' in context or '"notes"' in context:
+                continue
+            result.errors.append(ValidationIssue("ERROR", "R22", "workflow",
+                f"Potential secret detected: {description} — pattern: '{match.group()[:40]}...'",
+                "Remove the secret from workflow JSON. Use n8n credential store and reference by ID."))
+
+
+def check_expressions(workflow: dict, result: ValidationResult) -> None:
+    """W06: Detect common expression anti-patterns."""
+    workflow_str = json.dumps(workflow)
+
+    for pattern, description in EXPRESSION_ANTI_PATTERNS:
+        matches = pattern.findall(workflow_str)
+        if matches:
+            result.warnings.append(ValidationIssue("WARNING", "W06", "workflow",
+                f"Expression anti-pattern detected: {description}",
+                "Review all {{ }} expressions against n8n-mcp-cli.SKILL.md Part 4."))
+
+
+def check_splitinbatches_loop(nodes: list, connections: dict, result: ValidationResult) -> None:
+    """R23: splitInBatches nodes must have a loop-back and a done-branch connection."""
+    batch_nodes = [n for n in nodes if n.get("type") == "n8n-nodes-base.splitInBatches"]
+    targeted = {
+        edge["node"]
+        for src, conn in connections.items()
+        for port in conn.get("main", [])
+        for edge in port
+        if isinstance(edge, dict)
+    }
+
+    for node in batch_nodes:
+        name = node.get("name", "")
+        conn = connections.get(name, {})
+        main_ports = conn.get("main", [])
+
+        # Must be a target (loop-back exists from body nodes)
+        if name not in targeted:
+            result.errors.append(ValidationIssue("ERROR", "R23", name,
+                "splitInBatches node has no loop-back connection (nothing wires back to it).",
+                "Connect the last node in the loop body back to this splitInBatches node input."))
+
+        # Must have at least two output ports defined (body + done)
+        if len(main_ports) < 2:
+            result.errors.append(ValidationIssue("ERROR", "R23", name,
+                f"splitInBatches has {len(main_ports)} output port(s) — needs 2 (body + done).",
+                "Port 0 = loop body, Port 1 = done branch. Both must be connected."))
+
+
+def check_credential_placeholders(nodes: list, result: ValidationResult) -> None:
+    """INFO: List all credential placeholders that need replacement post-import."""
+    for node in nodes:
+        creds = node.get("credentials", {})
+        for ctype, cdata in creds.items():
+            if isinstance(cdata, dict) and cdata.get("id") == "REPLACE_WITH_CREDENTIAL_ID":
+                result.infos.append(ValidationIssue("INFO", "I01", node.get("name", ""),
+                    f"Credential '{ctype}' uses placeholder ID — must be replaced after import.",
+                    f"n8n UI → Settings → Credentials → find '{cdata.get('name', '')}' → copy ID → replace in node."))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main Validator
+# ─────────────────────────────────────────────────────────────────────────────
+
+def validate(workflow: dict) -> ValidationResult:
+    result = ValidationResult()
+
+    check_top_level(workflow, result)
+
+    nodes = workflow.get("nodes", [])
+    connections = workflow.get("connections", {})
+
+    if not isinstance(nodes, list) or not isinstance(connections, dict):
+        return result  # fatal structural errors already recorded
+
+    name_set, trigger_names = check_nodes(nodes, result)
+    check_connections(connections, name_set, trigger_names, result)
+    check_secrets(workflow, result)
+    check_expressions(workflow, result)
+    check_splitinbatches_loop(nodes, connections, result)
+    check_credential_placeholders(nodes, result)
+
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Output Formatters
+# ─────────────────────────────────────────────────────────────────────────────
+
+def print_report(result: ValidationResult, workflow_name: str, strict: bool) -> int:
+    line = "─" * 64
+    print(f"\n{line}")
+    print(f"  n8n Workflow Validator — block-invalid-nodes")
+    print(f"  Workflow: {workflow_name}")
+    print(line)
+
+    if result.errors:
+        print(f"\n  ✗ ERRORS ({len(result.errors)})")
+        for e in result.errors:
+            print(f"\n    [{e.rule_id}] {e.node_name}")
+            print(f"    Problem : {e.message}")
+            print(f"    Fix     : {e.fix}")
+
+    if result.warnings:
+        print(f"\n  ⚠ WARNINGS ({len(result.warnings)})")
+        for w in result.warnings:
+            print(f"\n    [{w.rule_id}] {w.node_name}")
+            print(f"    Problem : {w.message}")
+            print(f"    Fix     : {w.fix}")
+
+    if result.infos:
+        print(f"\n  ℹ POST-IMPORT ACTIONS ({len(result.infos)})")
+        for i in result.infos:
+            print(f"\n    [{i.rule_id}] {i.node_name}")
+            print(f"    Action  : {i.fix}")
+
+    print(f"\n{line}")
+    print(f"  Errors: {len(result.errors)}  Warnings: {len(result.warnings)}  "
+          f"Post-import actions: {len(result.infos)}")
+
+    effective_pass = result.passed and (not strict or len(result.warnings) == 0)
+
+    if effective_pass:
+        print(f"  Status: ✓ PASS — workflow.json is ready for import")
+        exit_code = 0
+    elif not result.passed:
+        print(f"  Status: ✗ BLOCKED — fix {len(result.errors)} error(s) before proceeding")
+        exit_code = 1
+    else:
+        print(f"  Status: ⚠ PASS WITH WARNINGS — review before importing")
+        exit_code = 2
+
+    print(line + "\n")
+    return exit_code
+
+
+def print_json_report(result: ValidationResult, workflow_name: str) -> int:
+    import json
+    output = {
+        "workflow": workflow_name,
+        "passed": result.passed,
+        "errors": [
+            {"rule": e.rule_id, "node": e.node_name, "message": e.message, "fix": e.fix}
+            for e in result.errors
+        ],
+        "warnings": [
+            {"rule": w.rule_id, "node": w.node_name, "message": w.message, "fix": w.fix}
+            for w in result.warnings
+        ],
+        "actions": [
+            {"rule": i.rule_id, "node": i.node_name, "action": i.fix}
+            for i in result.infos
+        ],
+        "summary": {
+            "error_count": len(result.errors),
+            "warning_count": len(result.warnings),
+            "action_count": len(result.infos),
+        }
+    }
+    print(json.dumps(output, indent=2))
+    return 0 if result.passed else 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Entry Point
+# ─────────────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Validate n8n workflow JSON against the official schema specification."
+    )
+    parser.add_argument("--file", "-f", type=str, help="Path to workflow JSON file (defaults to stdin)")
+    parser.add_argument("--strict", "-s", action="store_true", help="Treat warnings as errors")
+    parser.add_argument("--json", "-j", action="store_true", dest="json_output",
+                        help="Output machine-readable JSON report")
+    args = parser.parse_args()
+
+    # Read input
+    try:
+        if args.file:
+            content = Path(args.file).read_text(encoding="utf-8")
+        else:
+            if sys.stdin.isatty():
+                print("Error: Provide --file or pipe workflow JSON via stdin.", file=sys.stderr)
+                sys.exit(1)
+            content = sys.stdin.read()
+    except FileNotFoundError:
+        print(f"Error: File not found: {args.file}", file=sys.stderr)
+        sys.exit(1)
+
+    # Parse JSON
+    try:
+        workflow = json.loads(content)
+    except json.JSONDecodeError as e:
+        if args.json_output:
+            print(json.dumps({"passed": False, "parse_error": str(e)}))
+        else:
+            print(f"✗ Invalid JSON: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    workflow_name = workflow.get("name", "<unnamed>")
+
+    # Run validation
+    result = validate(workflow)
+
+    # Output
+    if args.json_output:
+        exit_code = print_json_report(result, workflow_name)
+    else:
+        exit_code = print_report(result, workflow_name, args.strict)
+
+    sys.exit(exit_code)
+
+
+if __name__ == "__main__":
+    main()
