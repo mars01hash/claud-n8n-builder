@@ -48,7 +48,10 @@ claud-n8n-builder/
 │
 ├── skills/
 │   ├── core-system.SKILL.md         ← Ground truth: API, schema, security
-│   └── <node-slug>.SKILL.md         ← Specialized skills created by agents
+│   ├── postgres.SKILL.md            ← Specialized: SQL synthesis, Docker networking
+│   ├── slack.SKILL.md               ← Specialized: Message blocks, channel logic
+│   ├── http-request.SKILL.md        ← Specialized: Auth mapping, pagination
+│   └── google-sheets.SKILL.md       ← Specialized: Sheet mapping, OAuth2
 │
 ├── agents/
 │   ├── query-navigator.agent.md     ← ROUTE: intent classification and dispatch

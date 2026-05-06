@@ -227,7 +227,14 @@ In this architecture, "Skills" are not static documentation. They are **active k
 
 ### Why it is a "Skill" and not just "Docs"
 
-Unlike raw documentation, a Skill file is **agent-curated**. It contains specific mapping logic (Part 3) that translates human intent into parameters, and "Agentic Tips" that help Claude avoid common n8n pitfalls (like using `localhost` in Docker).
+### Pre-loaded Specialized Skills
+
+The system comes pre-loaded with high-value skills for common integrations:
+- `skills/postgres.SKILL.md`: Docker-optimized networking and SQL mapping.
+- `skills/slack.SKILL.md`: Block Kit patterns and channel management.
+- `skills/http-request.SKILL.md`: Complete auth and pagination logic.
+- `skills/google-sheets.SKILL.md`: Sheet mapping and scope verification.
+- `skills/airtable.SKILL.md`: Base/Table mapping and Token auth.
 
 ---
 
