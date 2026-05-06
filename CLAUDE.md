@@ -22,8 +22,13 @@ workflow-architect        (EXECUTE) → generates workflow.json + guide.md + nod
 
 ## Active Skills
 
-Load this skill before any n8n work:
-- `skills/n8n-mcp-cli.SKILL.md` — full n8n API, schema, node catalog, Docker rules
+Load these skills before any n8n work:
+- `skills/core-system.SKILL.md` — n8n API, workflow schema, expressions, security
+- `skills/postgres.SKILL.md` — specialized Postgres patterns & Docker networking
+- `skills/slack.SKILL.md` — specialized Slack message & channel patterns
+- `skills/google-sheets.SKILL.md` — specialized Sheet mapping & OAuth2
+- `skills/http-request.SKILL.md` — specialized REST API & pagination patterns
+- `skills/*.SKILL.md` — other specialized skills (Airtable, etc.)
 
 ## Active Agents
 
@@ -66,3 +71,5 @@ Copy and customize for new workflows:
 3. Always run both hooks before writing to WORKSPACE_ROOT
 4. Always update `WORKSPACE_ROOT/workflow-catalog.md` after generating a workflow
 5. Use node names from `n8n-nodes-base.*` catalog only — no invented types
+6. Always check `skills/` for specialized knowledge before using raw docs
+7. Always CREATE a new `<node-slug>.SKILL.md` if a node is resolved via live documentation

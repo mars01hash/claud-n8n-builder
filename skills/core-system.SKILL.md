@@ -1,13 +1,12 @@
 ---
-name: n8n-mcp-cli
+name: core-system
 type: skill
-version: 3.0.0
-authority: Official n8n REST API (OpenAPI 3.0) + MCP Protocol Spec (2025-06-18)
+version: 3.1.0
+authority: Official n8n REST API + MCP Protocol Spec
 description: >
-  Production-grade reference for building, managing, and deploying n8n workflows.
-  Covers the authoritative JSON schema (v1 execution order), complete node catalog
-  with Resource Mapping logic, security-hardened credential handling, and Docker/VPS
-  operational rules. Ground truth for all agents in this repository.
+  The fundamental ground truth for the n8n-builder system. Covers the n8n REST API,
+  canonical workflow JSON schema, expression syntax, and core security protocols.
+  This is the foundation upon which node-specific skills are built.
 applies_to:
   - workflow-architect agent
   - n8n-enricher agent
@@ -15,7 +14,7 @@ applies_to:
   - all direct n8n JSON generation and API interaction tasks
 ---
 
-# Skill: n8n-mcp-cli
+# Skill: core-system
 ## Grounded In
 - n8n Public REST API — OpenAPI 3.0, base path `/api/v1`
 - n8n Docs: docs.n8n.io/api/, docs.n8n.io/integrations/
@@ -323,144 +322,13 @@ n8n passes data between nodes as an array of items:
 
 ---
 
-## PART 3 — Resource Mapping: Natural Language → n8n Parameters
+## PART 3 — Resource Mapping Policy
 
-This section defines how Claude translates a user's plain-English request into
-the exact n8n node type, operation, and parameter values.
+This system uses a **Specialized Skill Library** for resource mapping. 
 
-### 3.1 Mapping Decision Table
-
-| User Says | Node Type | Resource | Operation | Key Parameters |
-|---|---|---|---|---|
-| "when a POST arrives at /lead" | `n8n-nodes-base.webhook` | — | — | `httpMethod: POST`, `path: lead` |
-| "every day at 9am" | `n8n-nodes-base.scheduleTrigger` | — | — | `cronExpression: 0 9 * * *` |
-| "call the API at https://..." | `n8n-nodes-base.httpRequest` | — | — | `method`, `url`, `authentication` |
-| "save to Postgres table X" | `n8n-nodes-base.postgres` | — | `insert` | `schema`, `table`, `columns` |
-| "read from Postgres" | `n8n-nodes-base.postgres` | — | `select` | `table`, `where`, `limit` |
-| "send a Slack message" | `n8n-nodes-base.slack` | `message` | `post` | `channel`, `text` |
-| "send an email" | `n8n-nodes-base.emailSend` | — | — | `to`, `subject`, `text\|html` |
-| "if field equals X" | `n8n-nodes-base.if` | — | — | `conditions`, `combinator` |
-| "route based on status field" | `n8n-nodes-base.switch` | — | — | `mode: rules`, `rules` |
-| "map / rename fields" | `n8n-nodes-base.set` | — | — | `mode: manual`, `fields.values` |
-| "run JavaScript" | `n8n-nodes-base.code` | — | — | `language: javaScript`, `jsCode` |
-| "loop over list" | `n8n-nodes-base.splitInBatches` | — | — | `batchSize` |
-| "merge two branches" | `n8n-nodes-base.merge` | — | — | `mode` |
-| "respond to webhook caller" | `n8n-nodes-base.respondToWebhook` | — | — | `respondWith`, `responseBody` |
-| "pause / wait" | `n8n-nodes-base.wait` | — | — | `resume` |
-| "read from Google Sheets" | `n8n-nodes-base.googleSheets` | `sheet` | `read` | `documentId`, `sheetName` |
-| "write to Google Sheets" | `n8n-nodes-base.googleSheets` | `sheet` | `appendOrUpdate` | `documentId`, `sheetName`, `columns` |
-| "do nothing / placeholder" | `n8n-nodes-base.noOp` | — | — | *(none)* |
-
-### 3.2 HTTP Request — Auth Header Mapping
-
-Translate user's authentication intent to the exact `httpRequest` parameters:
-
-```
-User says: "send bearer token"
-→ authentication: "genericCredentialType"
-  genericAuthType: "httpBearerAuth"
-  credentials.httpBearerAuth: { id: "REPLACE_WITH_CREDENTIAL_ID", name: "..." }
-
-User says: "use Basic auth"
-→ authentication: "genericCredentialType"
-  genericAuthType: "httpBasicAuth"
-  credentials.httpBasicAuth: { id: "REPLACE_WITH_CREDENTIAL_ID", name: "..." }
-
-User says: "send API key in header X-API-Key"
-→ authentication: "genericCredentialType"
-  genericAuthType: "httpHeaderAuth"
-  credentials.httpHeaderAuth: { id: "REPLACE_WITH_CREDENTIAL_ID", name: "..." }
-
-User says: "use OAuth2"
-→ authentication: "genericCredentialType"
-  genericAuthType: "oAuth2Api"
-  credentials.oAuth2Api: { id: "REPLACE_WITH_CREDENTIAL_ID", name: "..." }
-
-User says: "no auth / public API"
-→ authentication: "none"
-  (no credentials field)
-```
-
-**HTTP Request — Body Type Mapping:**
-```
-User says "send JSON body"
-→ sendBody: true, bodyContentType: "json"
-  bodyParameters.parameters: [{ name: "key", value: "={{ $json[\"val\"] }}" }]
-
-User says "send form data"
-→ sendBody: true, bodyContentType: "form-urlencoded"
-
-User says "send raw/text"
-→ sendBody: true, bodyContentType: "raw"
-  body: "raw string content"
-
-User says "upload a file"
-→ sendBody: true, bodyContentType: "binaryData"
-  inputDataFieldName: "data"
-```
-
-### 3.3 Postgres — SQL Synthesis Rules
-
-```
-User says "get all users where active = true"
-→ operation: "select"
-  table: { value: "users", mode: "string" }
-  where: { values: [{ column: "active", condition: "equal", value: true }] }
-  options: { limit: 1000 }
-
-User says "insert a new lead"
-→ operation: "insert"
-  schema: { value: "public", mode: "string" }
-  table: { value: "leads", mode: "string" }
-  columns: "email,name,source,created_at"
-  (n8n maps columns to $json fields by name automatically)
-
-User says "update status to 'processed' where id matches"
-→ operation: "update"
-  table: { value: "leads", mode: "string" }
-  columns: "status"
-  where: { values: [{ column: "id", condition: "equal", value: "={{ $json[\"id\"] }}" }] }
-
-User says "run a custom SQL query"
-→ operation: "executeQuery"
-  query: "SELECT u.*, o.total FROM users u JOIN orders o ON u.id = o.user_id WHERE o.total > $1"
-  options: { queryParams: "={{ $json[\"minTotal\"] }}" }
-```
-
-**Postgres credential type:** `"postgres"` (not `postgresApi` — that was a deprecated name)
-
-### 3.4 Schedule Trigger — Cron Expression Mapping
-
-```
-"every minute"        → */1 * * * *
-"every 15 minutes"    → */15 * * * *
-"every hour"          → 0 * * * *
-"every day at 9am"    → 0 9 * * *
-"weekdays at 8:30am"  → 30 8 * * 1-5
-"every Sunday at 2am" → 0 2 * * 0
-"first day of month"  → 0 0 1 * *
-```
-
-Always use `field: "cronExpression"` in the `rule.interval` array, not `field: "hours"` or `field: "minutes"` — the cron form is more reliable for complex schedules.
-
-### 3.5 IF / Switch — Condition Operator Mapping
-
-```
-User says "equals"           → operation: "equals"
-User says "not equal"        → operation: "notEquals"
-User says "contains"         → operation: "contains"        (string)
-User says "starts with"      → operation: "startsWith"
-User says "ends with"        → operation: "endsWith"
-User says "is empty"         → operation: "isEmpty"
-User says "exists / not null"→ operation: "isNotEmpty"
-User says "greater than"     → operation: "gt"              (number)
-User says "less than"        → operation: "lt"
-User says "is in list"       → operation: "in"              (array)
-User says "regex matches"    → operation: "regex"
-```
-
-Always set `operator.type` to match the data type:
-`"string"` | `"number"` | `"boolean"` | `"dateTime"` | `"array"` | `"object"`
+1. **Policy**: Agents must check `skills/` for a matching `<node-slug>.SKILL.md` file before generating parameters.
+2. **Fallback**: If no specialized skill exists, the agent must fetch live documentation via MCP tools and then **CREATE** a new specialized skill file for that node.
+3. **Core Knowledge**: Common expression syntax and security protocols remain in this `core-system.SKILL.md` for platform-wide availability.
 
 ---
 
@@ -675,130 +543,20 @@ For production webhooks:
 
 ---
 
-## PART 7 — Node Parameter Templates (Production-Ready)
+## PART 7 — Specialized Skills Directory
 
-### 7.1 Webhook Trigger
-```json
-{
-  "id": "REPLACE_UUID",
-  "name": "Receive Webhook",
-  "type": "n8n-nodes-base.webhook",
-  "typeVersion": 2,
-  "position": [240, 300],
-  "webhookId": "REPLACE_UUID",
-  "parameters": {
-    "httpMethod": "POST",
-    "path": "REPLACE_PATH",
-    "responseMode": "responseNode",
-    "options": {
-      "allowedOrigins": "*",
-      "ignoreBots": true
-    }
-  }
-}
-```
+The following specialized skills are available in the `skills/` directory:
 
-### 7.2 HTTP Request (with JSON body + Bearer auth)
-```json
-{
-  "id": "REPLACE_UUID",
-  "name": "Call External API",
-  "type": "n8n-nodes-base.httpRequest",
-  "typeVersion": 4.2,
-  "position": [480, 300],
-  "parameters": {
-    "method": "POST",
-    "url": "https://api.example.com/endpoint",
-    "authentication": "genericCredentialType",
-    "genericAuthType": "httpBearerAuth",
-    "sendBody": true,
-    "bodyContentType": "json",
-    "bodyParameters": {
-      "parameters": [
-        { "name": "email",  "value": "={{ $json[\"email\"] }}" },
-        { "name": "source", "value": "n8n-automation" }
-      ]
-    },
-    "options": {
-      "timeout": 10000,
-      "response": {
-        "response": { "fullResponse": false, "neverError": false }
-      }
-    }
-  },
-  "credentials": {
-    "httpBearerAuth": { "id": "REPLACE_WITH_CREDENTIAL_ID", "name": "API Bearer Token" }
-  },
-  "retryOnFail": true,
-  "maxTries": 3,
-  "waitBetweenTries": 2000,
-  "onError": "continueErrorOutput"
-}
-```
+| Skill | Coverage |
+|---|---|
+| `postgres.SKILL.md` | SQL synthesis, Docker networking, transaction handling |
+| `slack.SKILL.md` | Message posting, blocks, channel management |
+| `google-sheets.SKILL.md` | Row mapping, OAuth2 scopes, ranges |
+| `http-request.SKILL.md` | Auth mapping, pagination, body types |
+| `airtable.SKILL.md` | Base/Table mapping, Token auth |
 
-### 7.3 Set Fields (v3.4)
-```json
-{
-  "id": "REPLACE_UUID",
-  "name": "Map Output Fields",
-  "type": "n8n-nodes-base.set",
-  "typeVersion": 3.4,
-  "position": [720, 300],
-  "parameters": {
-    "mode": "manual",
-    "duplicateItem": false,
-    "fields": {
-      "values": [
-        { "name": "email",      "value": "={{ $json[\"body\"][\"email\"] }}" },
-        { "name": "source",     "value": "webhook" },
-        { "name": "created_at", "value": "={{ $now.toISO() }}" }
-      ]
-    },
-    "options": { "dotNotation": true }
-  }
-}
-```
+Refer to these files for detailed node parameters and templates.
 
-### 7.4 IF Condition (v2.2)
-```json
-{
-  "id": "REPLACE_UUID",
-  "name": "Check Status",
-  "type": "n8n-nodes-base.if",
-  "typeVersion": 2.2,
-  "position": [960, 300],
-  "parameters": {
-    "conditions": {
-      "options": { "caseSensitive": false, "typeValidation": "strict" },
-      "conditions": [
-        {
-          "id": "REPLACE_UUID",
-          "leftValue": "={{ $json[\"status\"] }}",
-          "rightValue": "active",
-          "operator": { "type": "string", "operation": "equals" }
-        }
-      ],
-      "combinator": "and"
-    },
-    "options": {}
-  }
-}
-```
-
-### 7.5 Postgres Insert (v2.5)
-```json
-{
-  "id": "REPLACE_UUID",
-  "name": "Insert Lead to Postgres",
-  "type": "n8n-nodes-base.postgres",
-  "typeVersion": 2.5,
-  "position": [1200, 300],
-  "parameters": {
-    "operation": "insert",
-    "schema": { "value": "public", "mode": "string" },
-    "table":  { "value": "leads",  "mode": "string" },
-    "columns": "email,source,created_at",
-    "options": {
       "queryBatching": "multiple",
       "outputLargeNumbers": "numbers"
     }

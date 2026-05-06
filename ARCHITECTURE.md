@@ -162,23 +162,23 @@ g:\Proj_ClaudSkills\
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  LAYER 1: SKILL                                                         │
-│  skills/n8n-mcp-cli.SKILL.md                                           │
-│  The authoritative ground truth. API spec, JSON schema, node catalog,  │
-│  resource mapping, expression syntax, security rules.                   │
-│  ↑ All agents read this. No agent modifies it.                         │
+│  LAYER 1: DYNAMIC SKILL LIBRARY                                         │
+│  skills/core-system.SKILL.md  +  skills/*.SKILL.md                      │
+│  The authoritative ground truth. API spec, JSON schema, and specialized  │
+│  node knowledge.                                                        │
+│  ↑ Agents read AND WRITE to this layer.                                 │
 └───────────────────────────────┬─────────────────────────────────────────┘
-                                │ consulted by
+                                │ consulted / created by
 ┌───────────────────────────────▼─────────────────────────────────────────┐
 │  LAYER 2: AGENTS                                                        │
 │                                                                         │
-│  ┌─────────────────────┐  routes  ┌──────────────────┐  spec  ┌──────┐ │
-│  │  query-navigator    │ ───────▶ │  n8n-enricher    │ ─────▶ │arch- │ │
-│  │  (ROUTE)            │          │  (ENRICH)        │        │itect │ │
-│  └─────────────────────┘          └──────────────────┘        └──────┘ │
-│  Intent classification        Doc retrieval + spec     JSON generation  │
-│  Catalog lookup               Node resolution          Assembly pipeline│
-│  Ambiguity resolution         Expression mapping       File output      │
+│  ┌──────────────┐ routes ┌──────────────┐ spec  ┌────────────┐          │
+│  │ navigator    │───────▶│ enricher     │──────▶│ architect  │          │
+│  │ (ROUTE)       │       │ (ENRICH)     │       │ (EXECUTE)  │          │
+│  └──────────────┘       └──────────────┘       └────────────┘          │
+│  Intent class.           Skill Lookup           JSON generation         │
+│  Catalog lookup          Skill Creation         Assembly pipeline       │
+│  Skill lookup            Doc retrieval          File output             │
 └───────────────────────────────┬─────────────────────────────────────────┘
                                 │ uses
 ┌───────────────────────────────▼─────────────────────────────────────────┐
@@ -187,7 +187,7 @@ g:\Proj_ClaudSkills\
 │  block-invalid-nodes    catalog-check    extract_workflow.py            │
 │  (23-rule validator)    (dup detector)   (node decomposer)              │
 │                                                                         │
-│  Templates: webhook | http-request | loop  (read-only scaffolding)     │
+│  Templates: webhook | http-request | loop | node-template (SKILL)       │
 │                                                                         │
 │  OUTPUT → WORKSPACE_ROOT/workflows/{Name}/                              │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -203,46 +203,31 @@ g:\Proj_ClaudSkills\
 
 ---
 
-## 5. Layer 1 — The Skill: Ground Truth
+## 5. Layer 1 — The Dynamic Skill Library
 
-**File:** [skills/n8n-mcp-cli.SKILL.md](skills/n8n-mcp-cli.SKILL.md)
+**Core Skill:** [skills/core-system.SKILL.md](skills/core-system.SKILL.md)
+**Node Skills:** `skills/*.SKILL.md`
 
-### What it contains (8 parts)
+### Why "Dynamic"?
 
-| Part | Content | Purpose |
+In this architecture, "Skills" are not static documentation. They are **active knowledge units** that the system manages.
+1. **Core System Skill**: Fixed reference for API, schema, and security.
+2. **Specialized Skills**: Modular files for specific integrations. If an agent needs a node it hasn't seen, it fetches the docs and **creates a new Skill file**.
+
+### What a Skill contains (Node-Specific)
+
+| Section | Content | Purpose |
 |---|---|---|
-| Part 1 | n8n REST API (auth, CRUD endpoints, curl examples) | API interaction |
-| Part 2 | Authoritative workflow JSON schema | Generation correctness |
-| Part 3 | Resource Mapping: NL → n8n parameters | Translation intelligence |
-| Part 4 | Expression reference (Luxon, $json, $now) | Expression correctness |
-| Part 5 | Security protocol (Docker, secrets, network) | Production safety |
-| Part 6 | typeVersion reference table | Schema version accuracy |
-| Part 7 | Production-ready node parameter templates | Copy-paste starting points |
-| Part 8 | 12-point pre-import checklist | Final quality gate |
+| Metadata | Type, Latest Version, Credential Type | Absolute identification |
+| Mapping | NL → n8n parameters | Translation intelligence |
+| Patterns | Optimized expressions | Ready-to-use JS logic |
+| Tips | Agentic Best Practices | Performance and reliability |
+| Errors | Common fixes | Proactive troubleshooting |
+| Security | Node-specific hardening | Production safety |
 
-### Why it is a "Skill" and not an "Agent"
+### Why it is a "Skill" and not just "Docs"
 
-An **Agent** has a *role* — it makes decisions, routes traffic, and has a
-workflow lifecycle stage. A **Skill** is *reference material* — it is consulted,
-not asked to think. The Skill file is the equivalent of an API specification
-document that all three agents keep open while working.
-
-### The Resource Mapping section (Part 3) is the critical innovation
-
-This is where natural language becomes n8n JSON:
-
-```
-User says: "save to Postgres leads table"
-Skill says:
-  node_type: n8n-nodes-base.postgres
-  operation: insert
-  schema: { value: "public", mode: "string" }
-  table:  { value: "leads",  mode: "string" }
-  credential_type: "postgres"
-```
-
-Without this mapping layer, Claude would produce plausible-sounding but
-structurally wrong parameter names on every generation.
+Unlike raw documentation, a Skill file is **agent-curated**. It contains specific mapping logic (Part 3) that translates human intent into parameters, and "Agentic Tips" that help Claude avoid common n8n pitfalls (like using `localhost` in Docker).
 
 ---
 
@@ -850,11 +835,12 @@ This is the full trace of a `BUILD_NEW` request through the entire system.
 ┌──────────────────────────────────────────────────────────────────────┐
 │  STEP 2: n8n-enricher (ENRICH)                                        │
 │                                                                       │
-│  • Classify trigger → webhook (POST) → n8n-nodes-base.webhook v2     │
-│  • Map step 1 → "save payload" → postgres insert → cred: "postgres"  │
-│  • Map step 2 → "Slack alert" → slack message.post → cred: "slack"   │
-│  • All nodes in core catalog → no live MCP retrieval needed           │
-│  • Map connections: Webhook→Postgres→Slack                            │
+│  • Skill Lookup → Check `skills/` for specialized knowledge           │
+│  • If Skill found → Use mapping logic and tips from Skill file        │
+│  • If Skill NOT found:                                                │
+│    1. Live MCP retrieval (fetch docs.n8n.io)                          │
+│    2. **CREATE NEW SKILL FILE** (e.g., `airtable.SKILL.md`)           │
+│  • Map trigger and steps using Skill/Doc metadata                     │
 │  • Emit ENRICHMENT SPEC YAML                                          │
 └──────────────────────────────────┬───────────────────────────────────┘
                                    │

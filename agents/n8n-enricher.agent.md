@@ -38,21 +38,27 @@ User Request
 
 ---
 
-## SECTION 1 — MCP Retrieval Strategy
+## SECTION 1 — Skill-First Retrieval Strategy
 
-### 1.1 When to Retrieve vs. When to Use Built-In Knowledge
+### 1.1 Skill Hierarchy
 
-Use built-in knowledge from `skills/n8n-mcp-cli.SKILL.md` for:
-- Core nodes: webhook, httpRequest, set, if, switch, code, splitInBatches, merge, postgres, scheduleTrigger, manualTrigger, respondToWebhook, noOp, emailSend, slack
-- Expression syntax (Luxon, $json, $now, etc.)
-- Connection format and workflow schema
+This system uses a two-tier skill hierarchy:
+1. **Core Skill** (`skills/core-system.SKILL.md`): Covers n8n API, workflow schema, expressions, and security.
+2. **Specialized Skills** (`skills/*.SKILL.md`): Covers specific nodes (e.g., `airtable.SKILL.md`).
 
-**Trigger live retrieval (MCP tools) when:**
-- The user requests a node NOT in the above core list
-- The user specifies an integration by service name (e.g., "use Notion", "connect to Airtable", "send via Twilio")
-- The node was recently added and typeVersion is uncertain
-- A community node (`npm install` required) is involved
-- The user reports a parameter doesn't work as expected
+### 1.2 When to Retrieve vs. When to Use Built-In Knowledge
+
+**ALWAYS check `skills/` first** for a specialized skill matching the requested node.
+
+Use built-in knowledge (Core or Specialized Skill) for:
+- Core nodes listed in `core-system.SKILL.md` (webhook, set, if, etc.).
+- Any node that already has a dedicated `.SKILL.md` file in the `skills/` directory.
+- Expression syntax and security protocols.
+
+**Trigger live retrieval (MCP tools) AND Skill Creation when:**
+- No matching specialized skill exists in `skills/`.
+- The user requests an integration not yet in our skill library.
+- The user reports that the current skill for a node is outdated or failing.
 
 ### 1.2 MCP Tool Invocation — Fetch Protocol
 
@@ -146,12 +152,18 @@ Step 3: FETCH (credential page if needed)
     - Auth method (API Key / OAuth2 / Basic / etc.)
 
 Step 4: VALIDATE
-  Cross-reference extracted params with n8n-mcp-cli.SKILL.md Part 2
-  Confirm typeVersion exists
-  Confirm connection type (main vs ai_tool etc.)
+  Cross-reference extracted params with `core-system.SKILL.md`.
+  Confirm typeVersion exists and connection type (main vs ai_tool) is correct.
 
-Step 5: OUTPUT
-  Emit enrichment spec (see Section 3)
+Step 5: CREATE SPECIALIZED SKILL (NEW)
+  If this node does not have a skill file, use `skills/node-template.SKILL.md` to
+  **CREATE a new `<node-slug>.SKILL.md`** file.
+  - Populate with the extracted parameters and types.
+  - Add at least two "Agentic Tips" based on common n8n patterns.
+  - Add "Common Error Fixes" if found during documentation retrieval.
+
+Step 6: OUTPUT
+  Emit enrichment spec (see Section 3).
 ```
 
 ### 1.5 Handling Retrieval Failures

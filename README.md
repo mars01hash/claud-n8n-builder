@@ -8,19 +8,19 @@ Without this system, Claude guesses n8n's JSON format on every request. With it,
 
 ## How It Works
 
-Every automation request flows through three agents in sequence:
+Every automation request flows through three agents in sequence, with a dynamic feedback loop to the Skill Library:
 
 ```
 User Request
     │
     ▼
-query-navigator     (ROUTE)    → classifies intent, checks catalog, dispatches
+query-navigator     (ROUTE)    → classifies intent, checks catalog & skills
     │
     ▼
-n8n-enricher        (ENRICH)   → resolves node types, credentials, expressions
-    │
-    ▼
-workflow-architect  (EXECUTE)  → generates workflow.json + guide.md + node files
+n8n-enricher        (ENRICH)   → resolves nodes, fetches docs, CREATES SKILLS
+    │                                                     │
+    ▼                                                     └─▶ skills/
+workflow-architect  (EXECUTE)  → generates workflow.json + guide.md
 ```
 
 Each request produces a ready-to-import workflow package:
@@ -47,7 +47,8 @@ claud-n8n-builder/
 ├── ARCHITECTURE.md                  ← Full system design reference
 │
 ├── skills/
-│   └── n8n-mcp-cli.SKILL.md         ← Ground truth: API, schema, node catalog, security
+│   ├── core-system.SKILL.md         ← Ground truth: API, schema, security
+│   └── <node-slug>.SKILL.md         ← Specialized skills created by agents
 │
 ├── agents/
 │   ├── query-navigator.agent.md     ← ROUTE: intent classification and dispatch
@@ -78,9 +79,9 @@ claud-n8n-builder/
 
 | Layer | Files | Responsibility |
 |---|---|---|
-| **Skill** | `skills/n8n-mcp-cli.SKILL.md` | API spec, JSON schema, node catalog, security rules — ground truth read by all agents |
-| **Agents** | `agents/*.agent.md` | Intent classification, doc retrieval, JSON generation — the intelligence layer |
-| **Toolchain** | `hooks/`, `scripts/` | Validation, duplicate detection, node extraction — automation layer |
+| **Skill** | `skills/*.SKILL.md` | API spec, JSON schema, specialized node knowledge — ground truth read and written by agents |
+| **Agents** | `agents/*.agent.md` | Intent classification, doc retrieval, skill creation, JSON generation |
+| **Toolchain** | `hooks/`, `scripts/` | Validation, duplicate detection, node extraction |
 
 ---
 

@@ -94,6 +94,7 @@ Intent      : BUILD_NEW | LOOKUP_EXISTING | MODIFY_WORKFLOW | EXPLAIN_CONCEPT | 
 Confidence  : <0-100>%
 Target      : <workflow name or concept>
 Catalog Hit : YES (<path>) | NO
+Skill Hit   : YES (<path>) | NO (Enricher will create)
 Next Agent  : n8n-enricher | workflow-architect | scripts/extract_workflow.py | inline | clarify
 ──────────────
 ```
